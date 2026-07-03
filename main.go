@@ -2,58 +2,79 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
 
+var miArbol *SegmentTree
+
 func main() {
-	// Conectar a la base de datos
+
+	var datos []float64
+
 	db, err := sql.Open("sqlite", "./VentasTambo.db")
 	if err != nil {
-		log.Fatalf("Error al abrir la base de datos: %v", err)
+		log.Fatal("Error al abrir BD:", err)
 	}
-	defer db.Close()
+	defer db.Close() //cerrar la conexion justo antes que termine la func, aunque termine en error
 
-	// Extraer datos
-	query := "SELECT monto_recaudado FROM ventas_tambo"
-	rows, err := db.Query(query)
+	aux, err := db.Query("SELECT monto_recaudado FROM ventas_tambo")
 	if err != nil {
-		log.Fatalf("Error al ejecutar la consulta: %v", err)
+		log.Fatal("Error al consultar la tabla:", err)
 	}
-	defer rows.Close()
 
-	var datosTambo []float64
-	for rows.Next() {
-		var monto float64
-		if err := rows.Scan(&monto); err != nil {
-			log.Fatalf("Error al leer la fila: %v", err)
+	for aux.Next() {
+		var val float64
+		aux.Scan(&val)
+		datos = append(datos, val)
+	}
+	aux.Close()
+
+	miArbol = NewSegmentTree(datos)
+	fmt.Println("Datos cargados de la BD y Árbol construido.")
+
+	// API: Consultar suma en un rango
+	http.HandleFunc("/api/consultar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+
+		l, _ := strconv.Atoi(r.URL.Query().Get("l"))
+		r_idx, _ := strconv.Atoi(r.URL.Query().Get("r"))
+
+		suma, pasos := miArbol.QuerySumConPasos(l, r_idx)
+
+		respuesta := map[string]interface{}{
+			"suma":           suma,
+			"nodosVisitados": pasos,
 		}
-		datosTambo = append(datosTambo, monto)
-	}
+		json.NewEncoder(w).Encode(respuesta)
+	})
 
-	// Primero validamos que tengamos datos
-	if len(datosTambo) == 0 {
-		fmt.Println("No se encontraron registros.")
-		return
-	}
+	// API: Actualizar un rango (Lazy Propagation)
+	http.HandleFunc("/api/actualizar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
 
-	tree := NewSegmentTree(datosTambo)
+		l, _ := strconv.Atoi(r.URL.Query().Get("l"))
+		r_idx, _ := strconv.Atoi(r.URL.Query().Get("r"))
+		val, _ := strconv.ParseFloat(r.URL.Query().Get("valor"), 64)
 
-	fmt.Printf("¡Éxito! Árbol construido con %d registros.\n", len(datosTambo))
+		pasos := miArbol.RangeUpdateConPasos(l, r_idx, val)
 
-	inicio := 0
-	fin := tree.N - 1
-	fmt.Printf("Suma total: S/ %.2f\n", tree.QuerySum(inicio, fin))
-	fmt.Printf("Mínimo: S/ %.2f\n", tree.QueryMin(inicio, fin))
-	fmt.Printf("Máximo: S/ %.2f\n", tree.QueryMax(inicio, fin))
+		respuesta := map[string]interface{}{
+			"mensaje":        "OK",
+			"nodosVisitados": pasos,
+		}
+		json.NewEncoder(w).Encode(respuesta)
+	})
 
-	fmt.Println("\n--- Aplicando ajuste masivo (Lazy Propagation) ---")
+	fmt.Println("\n--- Iniciando servidor para el frontend ---")
+	fmt.Println("Escuchando en http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 
-	tree.RangeUpdate(50, 100, 10.0)
-
-	fmt.Println("Ajuste aplicado correctamente.")
-	fmt.Printf("Nueva suma del rango [50,100]: S/ %.2f\n", tree.QuerySum(50, 100))
-	fmt.Printf("Nueva suma total de la BD: S/ %.2f\n", tree.QuerySum(0, tree.N-1))
 }
